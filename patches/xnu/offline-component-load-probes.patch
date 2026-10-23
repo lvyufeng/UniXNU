@@ -119,7 +119,7 @@
  	/* Initial proc_uuid_policy subsystem */
 --- a/iokit/Kernel/IOUserClient.cpp
 +++ b/iokit/Kernel/IOUserClient.cpp
-@@ -6693,3 +6693,66 @@
+@@ -6693,3 +6693,78 @@
  OSMetaClassDefineReservedUnused(IOUserClient2022, 1);
  OSMetaClassDefineReservedUnused(IOUserClient2022, 2);
  OSMetaClassDefineReservedUnused(IOUserClient2022, 3);
@@ -140,6 +140,18 @@
 +{
 +	__asm__ volatile("" ::: "memory");
 +}
++
++/*
++ * A board that does not link the legacy display driver still needs this
++ * symbol: the probe above references it when the boot argument asks for
++ * it. The definition is empty in that case.
++ */
++#if !defined(XNU_NATIVE_LEGACY_DISPLAY) || !XNU_NATIVE_LEGACY_DISPLAY
++void
++native_legacy_display_probe(void)
++{
++}
++#endif
 +
 +void
 +native_mobile_graphics_client_probe(void)
@@ -186,3 +198,4 @@
 +}
 +}
 +#endif
+

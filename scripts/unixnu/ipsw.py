@@ -121,8 +121,12 @@ class Ipsw:
             raise Error(f'this IPSW is {m["ProductVersion"]} ({m["ProductBuildVersion"]}) for {", ".join(m["SupportedProductTypes"])}; '
                         f'the board expects {c["version"]} ({c["build"]}) for {c["product"]}')
         for item in m['BuildIdentities']:
-            if (item['Info']['DeviceClass'] == c['device_class'] and item['Info']['RestoreBehavior'] == 'Erase'
-                    and int(item['ApChipID'], 16) == c['chip_id'] and int(item['ApBoardID'], 16) == c['board_id']):
+            info = item['Info']
+            # A legacy manifest (iPhone 8/X and older) carries no ApChipID/ApBoardID, so the device class alone
+            # selects the identity there.
+            if (info['DeviceClass'] == c['device_class'] and info['RestoreBehavior'] == 'Erase'
+                    and (('ApChipID' not in info or int(info['ApChipID'], 16) == c['chip_id'])
+                         and ('ApBoardID' not in info or int(info['ApBoardID'], 16) == c['board_id']))):
                 return item
         raise Error(f'no Erase build identity for {c["device_class"]} in this IPSW')
 
