@@ -34,7 +34,12 @@ def build(ctx, modules, uefi, edk2, target='DEBUG'):
     defines = {'FD_BASE': hex(base), 'FD_SIZE': hex(size), 'FD_BLOCKS': str(size // 0x1000)}
     defines.update({key: str(value) for key, value in fw.get('defines', {}).items()})
     fields = {'uefi': str(uefi), 'edk2': str(edk2), 'tree': str(ctx.tree)}
-    packages = ':'.join(item.format(**fields) for item in fw['packages'])
+    # A device package that keeps CDC driver binaries under its own root (Binaries/<set>/...) is found only when the
+    # checkout root is a package path entry; WORKSPACE alone does not add it.
+    entries = [item.format(**fields) for item in fw['packages']]
+    if str(uefi) not in entries:
+        entries.append(str(uefi))
+    packages = ':'.join(entries)
     tools = edk2 / 'BaseTools'
     if not (tools / 'Source/C/bin/GenFw').is_file():
         log('firmware: building BaseTools')

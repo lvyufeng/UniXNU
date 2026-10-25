@@ -1580,8 +1580,37 @@ UniXNUConfigLoad (
       // Only the actions are left. Say so instead of showing a menu that
       // looks complete.
       //
-      AsciiStrCpyS (Config->Notice, sizeof (Config->Notice), "no boot entry found");
-      UniXNULog ("config: no boot entry found");
+      //
+      // Say what was actually visible, not just that nothing was found. "No boot entry found"
+      // has been true for a run with no block device at all and for a run with a block device
+      // that no filesystem driver had mounted yet, and the two need different fixes.
+      //
+      {
+        UINTN  BlockCount = 0;
+        UINTN  FsCount    = 0;
+        UINTN  HandleCount;
+        EFI_HANDLE  *HandleBuffer;
+
+        if (!EFI_ERROR (gBS->LocateHandleBuffer (ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &HandleCount, &HandleBuffer))) {
+          BlockCount = HandleCount;
+          FreePool (HandleBuffer);
+        }
+
+        if (!EFI_ERROR (gBS->LocateHandleBuffer (ByProtocol, &gEfiSimpleFileSystemProtocolGuid, NULL, &HandleCount, &HandleBuffer))) {
+          FsCount = HandleCount;
+          FreePool (HandleBuffer);
+        }
+
+        AsciiSPrint (
+          Config->Notice,
+          sizeof (Config->Notice),
+          "no boot entry found: %u block device(s), %u filesystem(s)",
+          (UINT32)BlockCount,
+          (UINT32)FsCount
+          );
+        UniXNULog ("config: no boot entry found (%u block, %u fs)", (UINT32)BlockCount, (UINT32)FsCount);
+
+      }
     }
 
     Config->DefaultIndex = 0;

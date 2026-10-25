@@ -16,25 +16,27 @@ from pathlib import Path
 from .config import load_toml
 from .util import Error, log, run, sha256_file, tool
 
-DEFAULTS = {'header_version': 0, 'base': 0, 'kernel_offset': 0x8000, 'tags_offset': 0x1e00000, 'pagesize': 4096}
-MKBOOTIMG_FLAGS = ('base', 'kernel_offset', 'tags_offset', 'pagesize', 'header_version', 'ramdisk_offset', 'second_offset', 'cmdline')
+DEFAULTS = {'header_version': 0, 'base': 0, 'kernel_offset': 0x8000, 'tags_offset': 0x1e00000, 'pagesize': 4096, 'dtb_offset': 0x1f00000}
+MKBOOTIMG_FLAGS = ('base', 'kernel_offset', 'tags_offset', 'pagesize', 'header_version', 'ramdisk_offset', 'second_offset', 'dtb_offset', 'cmdline')
 
 
-def compile_shim(uefi, base, size, requires_header, scratch):
+def compile_shim(uefi, base, size, requires_header, scratch, probe=False):
     clang, objcopy, nm = tool('clang'), tool('llvm-objcopy', 'brew install llvm'), tool('llvm-nm', 'brew install llvm')
     source = uefi / 'BootShim/BootShim.S'
     if not source.is_file():
         raise Error(f'{source} missing: --uefi must be a Mu-Silicium checkout')
     obj = scratch / 'shim.o'
     run([clang, '--target=aarch64-none-elf', '-c', f'-DFD_BASE={base}', f'-DFD_SIZE={size}',
-         f'-DREQUIRES_KERNEL_HEADER={int(requires_header)}', source, '-o', obj], capture=True)
+         f'-DREQUIRES_KERNEL_HEADER={int(requires_header)}', f'-DBAO_PROBE={int(probe)}', source, '-o', obj], capture=True)
     run([objcopy, '-O', 'binary', obj, scratch / 'shim.bin'], capture=True)
     shim = (scratch / 'shim.bin').read_bytes()
     symbols = run([nm, '-n', obj], capture=True)
     offset = next((int(line.split()[0], 16) for line in symbols.splitlines() if line.endswith(' _Payload')), None)
     if offset != len(shim):
         raise Error('a literal pool or padding separates the _Payload label from the appended firmware volume')
-    if requires_header and (shim[56:60] != b'ARM\x64' or struct.unpack_from('<QQ', shim, 8) != (base, len(shim) + size)):
+    # The header carries the volume's own size, not shim+volume: ABL copies the volume to text_offset and
+    # the image_size field describes that volume, which is what the sm7125 boot image that boots does.
+    if requires_header and (shim[56:60] != b'ARM\x64' or struct.unpack_from('<QQ', shim, 8) != (base, size)):
         raise Error('the ARM64 image header does not describe the shim plus the firmware volume')
     return shim
 
@@ -86,13 +88,16 @@ def build(ctx, uefi, fd, dtb, ramdisk=None, output=None):
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='unixnu-bootimg-') as scratch_name:
         scratch = Path(scratch_name)
-        shim = compile_shim(uefi, base, size, requires_header, scratch)
+        shim = compile_shim(uefi, base, size, requires_header, scratch, bool(config.get('boot_shim', {}).get('probe')))
         tree = patch_dtb(Path(dtb).read_bytes(), ctx.board.get('bootimg', {}).get('dtb_node', []), scratch)
         if tree[:4] != b'\xd0\x0d\xfe\xed' or struct.unpack_from('>I', tree, 4)[0] != len(tree):
             raise Error('invalid compiled device tree')
         combined = shim + firmware
-        kernel = gzip.compress(combined, mtime=0) + tree
-        kernel_path = scratch / 'Image.gz-dtb'
+        appended = config.get('boot_image_kernel', {}).get('append_dtb', True)
+        kernel = gzip.compress(combined, mtime=0)
+        kernel_path = scratch / 'Image.gz'
+        if appended:
+            kernel += tree
         kernel_path.write_bytes(kernel)
         if ramdisk:
             ramdisk_path = Path(ramdisk)
@@ -102,6 +107,12 @@ def build(ctx, uefi, fd, dtb, ramdisk=None, output=None):
             ramdisk_path = scratch / 'ramdisk'
             ramdisk_path.write_bytes(b'')
         command = ['python3', mkbootimg, '--kernel', kernel_path, '--ramdisk', ramdisk_path, '-o', out]
+        if not appended:
+            # Header version 2 declares the tree as a region of its own; ABL finds no
+            # tree at all when the kernel blob is the only carrier.
+            dtb_path = scratch / 'dtb'
+            dtb_path.write_bytes(tree)
+            command += ['--dtb', str(dtb_path)]
         for key in MKBOOTIMG_FLAGS:
             if key in image:
                 command += [f'--{key}', str(image[key])]
@@ -124,8 +135,18 @@ def verify(path, combined, tree, ramdisk_path, image):
         raise Error('boot image load addresses do not match the requested offsets')
     kernel = data[page:page + kernel_size]
     unpacker = zlib.decompressobj(16 + zlib.MAX_WBITS)
-    if unpacker.decompress(kernel) != combined or not unpacker.eof or unpacker.unused_data != tree:
-        raise Error('gzip, firmware and appended device tree do not round-trip')
+    if unpacker.decompress(kernel) != combined or not unpacker.eof:
+        raise Error('gzip and firmware do not round-trip')
+    # The tree travels either glued onto the kernel (header versions 0 and 1) or in the region the
+    # header declares for it (version 2 and later), never in both.
+    separate = version >= 2
+    if separate:
+        dtb_size, dtb_address = struct.unpack_from('<IQ', data, 1648)
+        expected = page * (1 + -(-kernel_size // page) + -(-ramdisk_size // page))
+        if data[expected:expected + dtb_size] != tree:
+            raise Error('device tree region does not round-trip')
+    elif unpacker.unused_data != tree:
+        raise Error('appended device tree does not round-trip')
     start = page * (1 + -(-kernel_size // page))
     if data[start:start + ramdisk_size] != Path(ramdisk_path).read_bytes():
         raise Error('ramdisk bytes differ')
