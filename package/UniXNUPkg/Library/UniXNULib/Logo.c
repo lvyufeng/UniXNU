@@ -131,10 +131,19 @@ UniXNULogoRender (
 
   Sub  = (INT64)(Size * SS);
   Unit = Sub * FIX;
-  Mask = AllocateZeroPool ((UINTN)((Sub * Sub + 7) / 8));
+  //
+  // The page allocator, not the pool: for a 442 px logo this mask is a few hundred KB, and a
+  // pool request that size does not return on this board.
+  //
+  DEBUG ((DEBUG_ERROR, "UNIXNU: logo mask %d bytes\n", (UINTN)((Sub * Sub + 7) / 8)));
+  Mask = AllocatePages (EFI_SIZE_TO_PAGES ((UINTN)((Sub * Sub + 7) / 8)));
+  DEBUG ((DEBUG_ERROR, "UNIXNU: logo mask %p\n", Mask));
   if (Mask == NULL) {
     return;
   }
+
+  ZeroMem (Mask, (UINTN)((Sub * Sub + 7) / 8));
+  DEBUG ((DEBUG_ERROR, "UNIXNU: logo mask zeroed\n"));
 
   for (Stroke = 0; Stroke < ARRAY_SIZE (mLogoStrokes); Stroke++) {
     HalfWidth = MAX (FIX / 2, mLogoStrokes[Stroke][2] * Unit / LOGO_DESIGN);
@@ -157,6 +166,7 @@ UniXNULogoRender (
     }
   }
 
+  DEBUG ((DEBUG_ERROR, "UNIXNU: logo segments done\n"));
   for (Py = 0; Py < Size; Py++) {
     for (Px = 0; Px < Size; Px++) {
       Cover = 0;
@@ -178,5 +188,5 @@ UniXNULogoRender (
     }
   }
 
-  FreePool (Mask);
+  FreePages (Mask, EFI_SIZE_TO_PAGES ((UINTN)((Sub * Sub + 7) / 8)));
 }

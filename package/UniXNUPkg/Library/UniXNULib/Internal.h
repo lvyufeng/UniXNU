@@ -384,6 +384,15 @@ UniXNUConnectAll (
   VOID
   );
 
+/**
+  ConnectController() on each block device, without recursion, so a filesystem
+  driver can attach. Returns how many block devices there were.
+**/
+UINTN
+UniXNUConnectBlockDevices (
+  VOID
+  );
+
 VOID
 UniXNUInjectDrivers (
   IN  EFI_HANDLE       ImageHandle,

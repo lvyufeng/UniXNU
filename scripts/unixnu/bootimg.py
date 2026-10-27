@@ -92,19 +92,41 @@ def build(ctx, uefi, fd, dtb, ramdisk=None, output=None):
         tree = patch_dtb(Path(dtb).read_bytes(), ctx.board.get('bootimg', {}).get('dtb_node', []), scratch)
         if tree[:4] != b'\xd0\x0d\xfe\xed' or struct.unpack_from('>I', tree, 4)[0] != len(tree):
             raise Error('invalid compiled device tree')
-        combined = shim + firmware
-        appended = config.get('boot_image_kernel', {}).get('append_dtb', True)
-        kernel = gzip.compress(combined, mtime=0)
-        kernel_path = scratch / 'Image.gz'
-        if appended:
-            kernel += tree
-        kernel_path.write_bytes(kernel)
         if ramdisk:
             ramdisk_path = Path(ramdisk)
             if not ramdisk_path.is_file():
                 raise Error(f'ramdisk not found: {ramdisk_path}')
         else:
             ramdisk_path = scratch / 'ramdisk'
+            ramdisk_path.write_bytes(b'')
+
+        #
+        # The ramdisk rides in the kernel region when the platform asks for it.
+        #
+        # On gauguin the bootloader decompresses the kernel and leaves nothing else behind: the
+        # header is not in memory, and neither is a separately loaded ramdisk, so the firmware
+        # had no way to reach the payload at all. Putting the ramdisk inside the kernel blob
+        # makes the bootloader itself deliver it, because it decompresses the whole thing.
+        #
+        # Everything in one gzip stream also means the shim can work out where the ramdisk
+        # lands without knowing anything about the bootloader: it starts at the shim's own
+        # address plus the length of shim+volume, both fixed at build time.
+        ramdisk_inside = config.get('boot_image_kernel', {}).get('ramdisk_in_kernel', False)
+        dtb_inside = config.get('boot_image_kernel', {}).get('dtb_in_kernel', False)
+        payload = shim + firmware
+        if ramdisk_inside:
+            payload += ramdisk_path.read_bytes()
+        if dtb_inside:
+            payload += tree
+        combined = payload
+        appended = config.get('boot_image_kernel', {}).get('append_dtb', True)
+        kernel = gzip.compress(combined, mtime=0)
+        kernel_path = scratch / 'Image.gz'
+        if appended:
+            kernel += tree
+        kernel_path.write_bytes(kernel)
+        if ramdisk_inside:
+            ramdisk_path = scratch / 'ramdisk-in-kernel'
             ramdisk_path.write_bytes(b'')
         command = ['python3', mkbootimg, '--kernel', kernel_path, '--ramdisk', ramdisk_path, '-o', out]
         if not appended:

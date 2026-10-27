@@ -171,6 +171,20 @@ def build(ctx, kernel=None):
     run(command, cwd=ctx.tree, env=dict(os.environ, UNIXNU_UEFI=str(ctx.uefi or '')), log_file=ctx.logs / 'payload-adt.log')
     initrd = 'initrd = "Payloads/scratch-data.img"\n' if data else ''
     loader = '' if spec.get('loader', 'firmware') == 'firmware' else '[[driver]]\npath = "Payloads/DarwinBoot.efi"\n'
+    if spec.get('loader', 'firmware') != 'firmware':
+        #
+        # The driver named in [[driver]] has to exist in the payload, or UniXNU starts an entry
+        # of type "xnu" with no loader protocol installed and the boot ends at NOT_FOUND.
+        #
+        darwin = spec.get('darwinboot')
+        source = expand(darwin) if darwin else None
+        if source and source.is_file():
+            shutil.copyfile(source, payloads / 'DarwinBoot.efi')
+        else:
+            raise Error(
+                'loader is not "firmware" but no DarwinBoot.efi was found: '
+                'build it with scripts/build-darwinboot.sh and set [payload] darwinboot'
+            )
     config = (f'version = 1\n[boot]\ntimeout = {spec.get("timeout", 3)}\ndefault = "xnu"\n[kits]\nautoload = false\n{loader}'
               f'[[entry]]\nid = "xnu"\ntitle = "{spec.get("title", "UniXNU")}"\ntype = "xnu"\npath = "Payloads/kernel.macho"\n{initrd}'
               f'args = "{line}"\n')

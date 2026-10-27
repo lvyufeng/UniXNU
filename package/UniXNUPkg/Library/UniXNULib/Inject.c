@@ -47,6 +47,40 @@ UniXNUConnectAll (
 }
 
 //
+// Connect only the block devices, so a filesystem driver can attach to them.
+//
+// ConnectAll walks every handle in the system and does not come back on this board. The
+// narrower question the configuration load actually asks is whether the payload ramdisk has a
+// filesystem on it, and that needs ConnectController called on the ramdisk's handle alone -
+// with recursive off, because a recorded ramdisk has non-recursive children that would
+// otherwise be enumerated and never answered.
+//
+// Returns the number of block devices it asked about, which the menu can show.
+//
+UINTN
+UniXNUConnectBlockDevices (
+  VOID
+  )
+{
+  EFI_STATUS  Status;
+  EFI_HANDLE  *Handles;
+  UINTN       Count;
+  UINTN       Index;
+
+  Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &Count, &Handles);
+  if (EFI_ERROR (Status)) {
+    return 0;
+  }
+
+  for (Index = 0; Index < Count; Index++) {
+    gBS->ConnectController (Handles[Index], NULL, NULL, FALSE);
+  }
+
+  FreePool (Handles);
+  return Count;
+}
+
+//
 // The menu shows only how many drivers failed. Keep the first reason where it
 // can be read, as on a machine without a serial console the log is out of reach.
 //
@@ -60,7 +94,16 @@ NoteDriverFailure (
   )
 {
   if (Config->Error[0] == '\0') {
-    AsciiSPrint (Config->Error, sizeof (Config->Error), "driver %s: %a: %r", File, What, Status);
+    //
+    // The status first: the file name is long enough to push it off the end of the line the
+    // menu can show, and the status is the part that says what to fix.
+    //
+    //
+    // The status alone, up front. The file name was useful while the question was whether the
+    // walk reached the file at all; it does, and now the only thing that matters is which call
+    // said no.
+    //
+    AsciiSPrint (Config->Error, sizeof (Config->Error), "%r %a", Status, What);
   }
 }
 
@@ -114,6 +157,26 @@ UniXNUInjectDrivers (
     }
 
     Status = gBS->StartImage (Image, NULL, NULL);
+
+    //
+    // "Already started" is success for our purposes.
+    //
+    // It means the image ran and then ran again - the driver installed its protocol on the
+    // first start and the second one was refused, which leaves the protocol exactly where this
+    // code wants it. Counting it as a failure made a working loader look broken and left the
+    // menu reporting a boot error that did not exist.
+    //
+    if (Status == EFI_ALREADY_STARTED) {
+      //
+      // No NeedConnect here. The driver is already running, so whatever it binds was bound
+      // when it started; asking for ConnectAll on top of that is what made the run stop with
+      // no menu at all, because ConnectAll does not return on this board.
+      //
+      UniXNULog ("driver %s (%a): already started", Driver->File, Driver->Origin);
+      Stats->DriversLoaded++;
+      continue;
+    }
+
     if (EFI_ERROR (Status)) {
       UniXNULog ("driver %s (%a): start failed: %r", Driver->File, Driver->Origin, Status);
       NoteDriverFailure (Config, Driver->File, "start failed", Status);

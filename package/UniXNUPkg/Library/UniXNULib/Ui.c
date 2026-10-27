@@ -14,6 +14,48 @@
 #define PIXEL(r, g, b)  { (b), (g), (r), 0 }
 
 STATIC CONST EFI_GRAPHICS_OUTPUT_BLT_PIXEL  mBackground  = PIXEL (0x0B, 0x0C, 0x0F);
+
+//
+// Big buffers come from the page allocator, not the pool.
+//
+// A 781 KB AllocatePool does not return on this board: the portrait header asked for exactly
+// that for its logo and the boot stopped inside the call, with the "alloc" trace printed and
+// no "done" after it. AllocatePages for the same size works - the DarwinBoot reader switched
+// to it for a fifty-four megabyte kernel for the same reason and gets its pages back. Small
+// buffers still go to the pool, which is what it is for.
+//
+#define UI_POOL_LIMIT  (64 * 1024)
+
+STATIC
+VOID *
+UiAlloc (
+  IN UINTN  Bytes
+  )
+{
+  if (Bytes >= UI_POOL_LIMIT) {
+    return AllocatePages (EFI_SIZE_TO_PAGES (Bytes));
+  }
+
+  return AllocatePool (Bytes);
+}
+
+STATIC
+VOID
+UiFree (
+  IN VOID   *Buffer,
+  IN UINTN  Bytes
+  )
+{
+  if (Buffer == NULL) {
+    return;
+  }
+
+  if (Bytes >= UI_POOL_LIMIT) {
+    FreePages (Buffer, EFI_SIZE_TO_PAGES (Bytes));
+  } else {
+    FreePool (Buffer);
+  }
+}
 STATIC CONST EFI_GRAPHICS_OUTPUT_BLT_PIXEL  mText        = PIXEL (0xF2, 0xF3, 0xF5);
 STATIC CONST EFI_GRAPHICS_OUTPUT_BLT_PIXEL  mDim         = PIXEL (0x7C, 0x83, 0x8D);
 STATIC CONST EFI_GRAPHICS_OUTPUT_BLT_PIXEL  mAccent      = PIXEL (0x2A, 0x5B, 0xD7);
@@ -97,7 +139,7 @@ DrawText (
     return 0;
   }
 
-  Buffer = AllocatePool (W * Ch * sizeof (EFI_GRAPHICS_OUTPUT_BLT_PIXEL));
+  Buffer = UiAlloc (W * Ch * sizeof (EFI_GRAPHICS_OUTPUT_BLT_PIXEL));
   if (Buffer == NULL) {
     return 0;
   }
@@ -126,7 +168,7 @@ DrawText (
   }
 
   Ui->Gop->Blt (Ui->Gop, Buffer, EfiBltBufferToVideo, 0, 0, X, Y, W, Ch, 0);
-  FreePool (Buffer);
+  UiFree (Buffer, W * Ch * sizeof (EFI_GRAPHICS_OUTPUT_BLT_PIXEL));
   return W;
 }
 
@@ -370,18 +412,28 @@ PortraitHeader (
   Inner = Ui->Width - 2 * Ui->Margin;
   Y     = Top;
 
+  if (Draw) {
+    DEBUG ((DEBUG_ERROR, "UNIXNU: header draw logo=%d ch=%d inner=%d\n", Logo, Ch, Inner));
+  }
+
   if (Logo > 0) {
     if (Draw) {
-      Buffer = AllocatePool (Logo * Logo * sizeof (EFI_GRAPHICS_OUTPUT_BLT_PIXEL));
+      DEBUG ((DEBUG_ERROR, "UNIXNU: header logo was %d\n", Logo));
+      Logo = 128;
+      Buffer = UiAlloc (Logo * Logo * sizeof (EFI_GRAPHICS_OUTPUT_BLT_PIXEL));
+      DEBUG ((DEBUG_ERROR, "UNIXNU: header buffer %p\n", Buffer));
       if (Buffer != NULL) {
         UniXNULogoRender (Buffer, Logo, mBackground);
+        DEBUG ((DEBUG_ERROR, "UNIXNU: header rendered\n"));
         Ui->Gop->Blt (Ui->Gop, Buffer, EfiBltBufferToVideo, 0, 0, (Ui->Width - Logo) / 2, Y, Logo, Logo, 0);
-        FreePool (Buffer);
+        DEBUG ((DEBUG_ERROR, "UNIXNU: header blitted\n"));
+        UiFree (Buffer, Logo * Logo * sizeof (EFI_GRAPHICS_OUTPUT_BLT_PIXEL));
       }
     }
 
     Y += Logo + Ch;
   }
+
 
   //
   // One and a half times the text size when the title fits the column, the
@@ -390,7 +442,9 @@ PortraitHeader (
   if ((Logo == 0) || (StrCmp (Config->Title, L"UniXNU") != 0)) {
     TitleScale = (StrLen (Config->Title) * UNIXNU_GLYPH_WIDTH * Ui->Scale * 3 / 2 <= Inner) ? Ui->Scale * 3 / 2 : Ui->Scale;
     if (Draw) {
+      DEBUG ((DEBUG_ERROR, "UNIXNU: header title y=%d scale=%d\n", Y, TitleScale));
       DrawCenteredIn (Ui, Ui->Margin, Inner, Y, Config->Title, TitleScale, mText);
+      DEBUG ((DEBUG_ERROR, "UNIXNU: header title done\n"));
     }
 
     Y += UNIXNU_GLYPH_HEIGHT * TitleScale + Ch / 2;
@@ -468,10 +522,13 @@ DrawFramePortrait (
   BOOLEAN HasNote;
   CHAR16  Line[160];
 
+  DEBUG ((DEBUG_ERROR, "UNIXNU: portrait enter %ux%u\n", Ui->Width, Ui->Height));
   Ch    = UNIXNU_GLYPH_HEIGHT * Ui->Scale;
   Fch   = UNIXNU_GLYPH_HEIGHT * FooterScale (Ui);
   Inner = Ui->Width - 2 * Ui->Margin;
+  DEBUG ((DEBUG_ERROR, "UNIXNU: portrait fill begin\n"));
   FillRect (Ui, 0, 0, Ui->Width, Ui->Height, mBackground);
+  DEBUG ((DEBUG_ERROR, "UNIXNU: portrait fill done\n"));
 
   //
   // Footer: the countdown and key help lines, the result of the last boot
@@ -503,6 +560,8 @@ DrawFramePortrait (
   MaxRows = (ListBottom > Top + HeaderH + Ch) ? (ListBottom - Top - HeaderH - Ch) / Pitch : 0;
   Ui->VisibleRows = MIN (Config->EntryCount, MAX (MaxRows, (UINTN)1));
   Ui->MenuTop     = ListBottom - Ui->VisibleRows * Pitch + Ui->Scale * 3;
+
+  DEBUG ((DEBUG_ERROR, "UNIXNU: portrait geometry done\n"));
 
   //
   // Header height without the logo, whether or not the title shows beside it.
